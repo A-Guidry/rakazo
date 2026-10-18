@@ -299,7 +299,7 @@ import {
   toVoiceStatus,
   updateVoiceSpeechModel,
   voiceContext,
-  voiceCredentialEndpoint,
+  voiceCredentialServer,
 } from "./voice.js";
 
 const MAX_COMPUTER_TEXT_FILE_BYTES = 2 * 1024 * 1024;
@@ -6172,7 +6172,7 @@ export function createRouter(deps: RouterDeps) {
               isDefault: preference?.isDefault ?? false,
               voiceId: preference?.voiceId ?? "",
               speechModel: preference?.speechModel ?? "",
-              endpoint: await voiceCredentialEndpoint(deps, context.actor, row),
+              server: await voiceCredentialServer(deps, context.actor, row),
             });
           }),
         );

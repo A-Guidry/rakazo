@@ -130,12 +130,25 @@ export function parseOpenAiCompatibleVoiceSecret(plaintext: string): OpenAiCompa
   };
 }
 
-/** The non-secret base URL, for settings and disclosures. Undefined when unreadable. */
-export function openAiCompatibleVoiceEndpoint(plaintext: string): string | undefined {
+/** The non-secret part of a saved connection, for settings and disclosures. */
+export interface OpenAiCompatibleVoiceServer {
+  endpoint: string;
+  ttsModel: string;
+  sttModel: string;
+}
+
+/** Undefined when the saved secret is unreadable. Never includes the key. */
+export function openAiCompatibleVoiceServer(
+  plaintext: string,
+): OpenAiCompatibleVoiceServer | undefined {
   const secret = tryParseSecret(plaintext);
   if (!secret) return undefined;
   try {
-    return normalizeOpenAiCompatibleBaseUrl(secret.baseUrl);
+    return {
+      endpoint: normalizeOpenAiCompatibleBaseUrl(secret.baseUrl),
+      ttsModel: secret.ttsModel,
+      sttModel: secret.sttModel,
+    };
   } catch {
     return undefined;
   }
@@ -347,6 +360,12 @@ export class OpenAiCompatibleVoiceProvider implements VoiceProvider {
       signal,
     });
     if (!res.ok) throw new Error(serverError(res.status, "speaking", await readVoiceJson(res)));
+    const type = mediaType(res);
+    // mp3 was requested; servers label it audio/mpeg or audio/mp3. Anything else is not a clip.
+    if (type && type !== "audio/mpeg" && type !== "audio/mp3") {
+      await res.body?.cancel().catch(() => undefined);
+      throw new Error(`${PROVIDER_NAME} returned ${type} instead of MP3 audio.`);
+    }
     return { bytes: await readVoiceAudio(res, signal), mimeType: "audio/mpeg" };
   }
 
@@ -374,9 +393,19 @@ export class OpenAiCompatibleVoiceProvider implements VoiceProvider {
     });
     const body = await readVoiceJson(res, { requireValid: false, rawOnInvalid: true });
     if (!res.ok) throw new Error(serverError(res.status, "transcribing", body));
-    if (typeof body === "string") return { text: body.trim() };
+    if (typeof body === "string") {
+      const type = mediaType(res);
+      if (type && type !== "text/plain") {
+        throw new Error(`${PROVIDER_NAME} returned ${type} instead of a transcript.`);
+      }
+      return { text: body.trim() };
+    }
     return { text: String((body as { text?: unknown } | null)?.text ?? "").trim() };
   }
+}
+
+function mediaType(res: Response): string {
+  return (res.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
 }
 
 function isNetworkError(error: Error): boolean {

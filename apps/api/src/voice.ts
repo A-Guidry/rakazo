@@ -9,7 +9,7 @@ import {
   MAX_TRANSCRIBE_BYTES,
   NoVoiceConfigured,
   OPENAI_COMPATIBLE_VOICE_PROVIDER_ID,
-  openAiCompatibleVoiceEndpoint,
+  openAiCompatibleVoiceServer,
   serializeOpenAiCompatibleVoiceSecret,
   voiceCatalogEntry,
 } from "@rakazo/adapters";
@@ -72,7 +72,7 @@ export function toVoiceCredential(row: {
   isDefault: boolean;
   voiceId: string;
   speechModel?: string | null;
-  endpoint?: string;
+  server?: { endpoint: string; ttsModel: string; sttModel: string };
 }): VoiceCredential {
   return {
     id: row.id,
@@ -82,29 +82,40 @@ export function toVoiceCredential(row: {
     voiceId: row.voiceId,
     speechModel: row.speechModel ?? "",
     transcribe: Boolean(catalogEntry(row.provider)?.transcribe),
-    endpoint: row.endpoint ?? "",
+    endpoint: row.server?.endpoint ?? "",
+    ttsModel: row.server?.ttsModel ?? "",
+    sttModel: row.server?.sttModel ?? "",
   };
 }
 
-/** A self-hosted connection's base URL, read from its secret. Empty for hosted providers. */
-export async function voiceCredentialEndpoint(
+/**
+ * A self-hosted connection's address and model ids, read from its secret. Undefined for
+ * hosted providers and for a secret that cannot be read, which still lists the connection.
+ */
+export async function voiceCredentialServer(
   deps: VoiceDeps,
   actor: Actor,
   row: { provider: string; secretId: string },
-): Promise<string> {
-  if (row.provider !== OPENAI_COMPATIBLE_VOICE_PROVIDER_ID) return "";
-  const secret = await deps.prisma.secret.findFirst({
-    where: { id: row.secretId, userId: actor.userId, spaceId: null },
-  });
-  if (!secret) return "";
+) {
+  if (row.provider !== OPENAI_COMPATIBLE_VOICE_PROVIDER_ID) return undefined;
   try {
-    return (
-      openAiCompatibleVoiceEndpoint(await deps.secrets.load(secret.ciphertext, secret.id)) ?? ""
-    );
+    const secret = await deps.prisma.secret.findFirst({
+      where: { id: row.secretId, userId: actor.userId, spaceId: null },
+    });
+    if (!secret) return undefined;
+    return openAiCompatibleVoiceServer(await deps.secrets.load(secret.ciphertext, secret.id));
   } catch {
-    // An unreadable secret still lists the connection; reconnecting replaces it.
-    return "";
+    // Reconnecting replaces an unreadable secret.
+    return undefined;
   }
+}
+
+/** A different self-hosted server has its own voices, so the old choice cannot carry over. */
+export function voiceServerChanged(previousPlaintext: string | undefined, plaintext: string) {
+  const previous = previousPlaintext ? openAiCompatibleVoiceServer(previousPlaintext) : undefined;
+  return Boolean(
+    previous && previous.endpoint !== openAiCompatibleVoiceServer(plaintext)?.endpoint,
+  );
 }
 
 /**
@@ -215,6 +226,11 @@ export async function persistVoiceCredential(
         await loadVoiceCredential(deps, actor, input.provider).catch(() => null)
       : null;
   const plaintext = voiceCredentialPlaintext({ ...input, previousPlaintext: previous?.apiKey });
+  const server =
+    input.provider === OPENAI_COMPATIBLE_VOICE_PROVIDER_ID
+      ? openAiCompatibleVoiceServer(plaintext)
+      : undefined;
+  const serverChanged = voiceServerChanged(previous?.apiKey, plaintext);
   const requestedSpeechModel =
     input.provider === FISH_AUDIO_PROVIDER && input.speechModel !== undefined
       ? fishSpeechModelValue(input.speechModel)
@@ -224,7 +240,7 @@ export async function persistVoiceCredential(
   if (!verified.ok) {
     throw new ORPCError("BAD_REQUEST", { message: verified.message ?? "That key was rejected." });
   }
-  let voiceId = input.voiceId?.trim() ?? "";
+  let voiceId = serverChanged ? "" : (input.voiceId?.trim() ?? "");
   if (!voiceId) {
     const voices = await provider.listVoices(plaintext, voiceContext(actor, input.signal));
     voiceId = voices[0]?.id ?? "";
@@ -269,7 +285,7 @@ export async function persistVoiceCredential(
               },
             })
           : null;
-        const selectedVoiceId = voiceId || previousPreference?.voiceId || "";
+        const selectedVoiceId = voiceId || (serverChanged ? "" : previousPreference?.voiceId) || "";
         const speechModel =
           requestedSpeechModel !== undefined
             ? requestedSpeechModel
@@ -287,10 +303,7 @@ export async function persistVoiceCredential(
           isDefault: true,
           voiceId: selectedVoiceId,
           speechModel: speechModel ?? "",
-          endpoint:
-            input.provider === OPENAI_COMPATIBLE_VOICE_PROVIDER_ID
-              ? (openAiCompatibleVoiceEndpoint(plaintext) ?? "")
-              : "",
+          server,
         };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

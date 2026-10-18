@@ -4,7 +4,7 @@ import {
   DEFAULT_COMPATIBLE_TTS_MODEL,
   kokoroLangCode,
   OpenAiCompatibleVoiceProvider,
-  openAiCompatibleVoiceEndpoint,
+  openAiCompatibleVoiceServer,
   parseCompatibleVoiceList,
   parseOpenAiCompatibleVoiceSecret,
   serializeOpenAiCompatibleVoiceSecret,
@@ -50,7 +50,11 @@ describe("serializeOpenAiCompatibleVoiceSecret", () => {
       ttsModel: DEFAULT_COMPATIBLE_TTS_MODEL,
       sttModel: DEFAULT_COMPATIBLE_STT_MODEL,
     });
-    expect(openAiCompatibleVoiceEndpoint(keyed)).toBe("http://192.168.1.20:8880/v1");
+    expect(openAiCompatibleVoiceServer(keyed)).toEqual({
+      endpoint: "http://192.168.1.20:8880/v1",
+      ttsModel: "kokoro",
+      sttModel: "whisper-1",
+    });
   });
 
   it("blocks public hosts, metadata hosts, and cleartext keys to public servers", () => {
@@ -105,7 +109,7 @@ describe("serializeOpenAiCompatibleVoiceSecret", () => {
 
   it("refuses an unreadable saved secret instead of sending it anywhere", () => {
     expect(() => parseOpenAiCompatibleVoiceSecret("sk-bare-key")).toThrow(/unreadable/);
-    expect(openAiCompatibleVoiceEndpoint("sk-bare-key")).toBeUndefined();
+    expect(openAiCompatibleVoiceServer("sk-bare-key")).toBeUndefined();
   });
 });
 
@@ -246,6 +250,25 @@ describe("OpenAiCompatibleVoiceProvider", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("refuses a speech reply that is not MP3 audio", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("<html>login</html>", { headers: { "content-type": "text/html" } }),
+      );
+    await expect(
+      provider(fetchMock).synthesize({ text: "Hi", voiceId: "af_heart", apiKey: keyless }, ctx),
+    ).rejects.toThrow("The speech server returned text/html instead of MP3 audio.");
+    const mp3 = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(new Uint8Array([1]), { headers: { "content-type": "audio/mp3" } }),
+      );
+    await expect(
+      provider(mp3).synthesize({ text: "Hi", voiceId: "af_heart", apiKey: keyless }, ctx),
+    ).resolves.toMatchObject({ mimeType: "audio/mpeg" });
+  });
+
   it("omits lang_code for voices that are not Kokoro ids", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(new Uint8Array([1])));
     await provider(fetchMock).synthesize({ text: "Hi", voiceId: "alloy", apiKey: keyless }, ctx);
@@ -286,6 +309,20 @@ describe("OpenAiCompatibleVoiceProvider", () => {
         ctx,
       ),
     ).resolves.toEqual({ text: "hello there" });
+  });
+
+  it("refuses a non-text, non-JSON transcription reply", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("<html>login</html>", { headers: { "content-type": "text/html" } }),
+      );
+    await expect(
+      provider(fetchMock).transcribe(
+        { audio: new Uint8Array([1]), mimeType: "audio/webm", apiKey: keyless },
+        ctx,
+      ),
+    ).rejects.toThrow("The speech server returned text/html instead of a transcript.");
   });
 
   it("refuses a saved base URL that now points somewhere blocked", async () => {

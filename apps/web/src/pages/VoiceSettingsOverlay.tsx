@@ -83,6 +83,8 @@ export function VoiceSettingsOverlay({
     setVoiceId(activeVoice);
     setSpeechModel(cred?.speechModel ?? "");
     setBaseUrl(cred?.endpoint ?? "");
+    setTtsModel(cred?.ttsModel ?? "");
+    setSttModel(cred?.sttModel ?? "");
     if (cred) {
       const listed = await rpc.voice.voices({ provider: selected });
       setVoices(listed);

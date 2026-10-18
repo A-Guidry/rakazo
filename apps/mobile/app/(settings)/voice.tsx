@@ -45,6 +45,8 @@ type VoiceCredential = {
   voiceId: string;
   speechModel?: string;
   endpoint?: string;
+  ttsModel?: string;
+  sttModel?: string;
 };
 type VoiceStatus = {
   configured: boolean;
@@ -99,6 +101,8 @@ export default function VoiceSettings() {
     setVoiceId(cred?.voiceId ?? "");
     setSpeechModel(cred?.speechModel ?? "");
     setBaseUrl(cred?.endpoint ?? "");
+    setTtsModel(cred?.ttsModel ?? "");
+    setSttModel(cred?.sttModel ?? "");
     if (cred) {
       setVoices(await rpc<VoiceInfo[]>("voice/voices", { provider: selected }));
     } else {
