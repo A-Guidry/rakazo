@@ -262,7 +262,11 @@ export default function VoiceSettings() {
       await rpc("voice/connect", {
         provider: selected.id,
         apiKey: apiKey.trim(),
-        voiceId: voiceId || undefined,
+        voiceId:
+          selfHosted &&
+          (baseUrl.trim() !== credential?.endpoint || ttsModel.trim() !== credential?.ttsModel)
+            ? undefined
+            : voiceId || undefined,
         ...(selected.id === "fish-audio" ? { speechModel: speechModel.trim() } : {}),
         ...(selfHosted
           ? {

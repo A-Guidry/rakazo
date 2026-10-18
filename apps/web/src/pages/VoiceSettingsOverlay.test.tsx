@@ -233,3 +233,73 @@ it("connects a self-hosted speech server by URL without a key", async () => {
     vi.unstubAllGlobals();
   }
 });
+
+it.each([
+  { field: "Server URL", value: "http://100.64.0.11:8880/v1", keepVoice: false },
+  { field: "Speech model", value: "new-model", keepVoice: false },
+  { field: "Transcription model", value: "new-transcriber", keepVoice: true },
+  { field: "API key", value: "replacement-test-key", keepVoice: true },
+])(
+  "restores saved self-hosted fields and reconnects after editing $field",
+  async ({ field, value, keepVoice }) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    voice.connect.mockReset();
+    const saved = {
+      ...fish,
+      provider: "openai-compatible",
+      endpoint: "http://100.64.0.10:8810/v1",
+      ttsModel: "saved-speech",
+      sttModel: "saved-transcription",
+    };
+    voice.catalog.mockResolvedValue([
+      { id: saved.provider, name: "Self-hosted", description: "", transcribe: true },
+    ]);
+    voice.credentials.mockResolvedValue([saved]);
+    voice.status.mockResolvedValue({
+      configured: true,
+      ready: true,
+      provider: saved.provider,
+      voiceId: saved.voiceId,
+    });
+    voice.voices.mockResolvedValue([{ id: saved.voiceId, label: "Saved voice" }]);
+    voice.connect.mockResolvedValue(saved);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<VoiceSettingsOverlay embedded onClose={() => undefined} />);
+      });
+      expect(labelledInput(container, "Server URL").value).toBe(saved.endpoint);
+      expect(labelledInput(container, "Speech model").value).toBe(saved.ttsModel);
+      expect(labelledInput(container, "Transcription model").value).toBe(saved.sttModel);
+      expect(labelledInput(container, "API key").value).toBe("");
+      await act(async () => {
+        const input = labelledInput(container, field);
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+          input,
+          value,
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => {
+        [...container.querySelectorAll("button")]
+          .find((button) => button.textContent === "Reconnect")
+          ?.click();
+      });
+      expect(voice.connect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: saved.provider,
+          voiceId: keepVoice ? saved.voiceId : undefined,
+          baseUrl: field === "Server URL" ? value : saved.endpoint,
+          ttsModel: field === "Speech model" ? value : saved.ttsModel,
+          sttModel: field === "Transcription model" ? value : saved.sttModel,
+        }),
+      );
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  },
+);

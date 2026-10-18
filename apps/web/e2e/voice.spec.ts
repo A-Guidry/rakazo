@@ -117,14 +117,14 @@ test("voice settings take a self-hosted speech server by URL", async ({ page }, 
   );
   const connect = settings.getByRole("button", { name: "Connect", exact: true });
   await expect(connect).toBeDisabled();
-  await captureScreenshot(page, testInfo, "voice-settings-self-hosted");
+  await captureScreenshot(page, testInfo, "voice-settings-self-hosted-empty");
 
   // Nothing listens on the discard port, so the server check fails without a network.
   await settings.getByLabel("Server URL", { exact: true }).fill("http://127.0.0.1:9");
   await settings.getByLabel("Speech model", { exact: true }).fill("kokoro");
   await settings.getByLabel("Transcription model", { exact: true }).fill("whisper-1");
   await expect(connect).toBeEnabled();
-  await captureScreenshot(page, testInfo, "voice-settings-self-hosted-filled");
+  await captureScreenshot(page, testInfo, "voice-settings-self-hosted");
   await connect.click();
   await expect(
     settings.getByText("Couldn't reach the speech server at http://127.0.0.1:9."),
