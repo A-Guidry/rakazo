@@ -1,6 +1,7 @@
 import * as adapters from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import * as db from "@rakazo/db";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -9,13 +10,14 @@ import {
   MAX_SPEAK_REQUEST_BYTES,
   MAX_TRANSCRIBE_REQUEST_BYTES,
   mountVoiceHttpRoutes,
+  persistVoiceCredential,
   synthesizeVoice,
   toVoiceStatus,
   updateVoiceSpeechModel,
   type VoiceDeps,
+  voiceChoicesChanged,
   voiceCredentialPlaintext,
   voiceCredentialServer,
-  voiceServerChanged,
 } from "./voice.js";
 
 describe("toVoiceStatus", () => {
@@ -582,21 +584,94 @@ describe("voiceCredentialServer", () => {
   });
 });
 
-describe("voiceServerChanged", () => {
+describe("voiceChoicesChanged", () => {
   const first = adapters.serializeOpenAiCompatibleVoiceSecret({
     baseUrl: "http://100.64.0.10:8810",
   });
-  const sameWithModel = adapters.serializeOpenAiCompatibleVoiceSecret({
+  const sameWithKey = adapters.serializeOpenAiCompatibleVoiceSecret({
     baseUrl: "http://100.64.0.10:8810/v1",
+    apiKey: "local-test-key",
+  });
+  const otherModel = adapters.serializeOpenAiCompatibleVoiceSecret({
+    baseUrl: "http://100.64.0.10:8810",
     ttsModel: "kokoro",
   });
-  const other = adapters.serializeOpenAiCompatibleVoiceSecret({
+  const otherServer = adapters.serializeOpenAiCompatibleVoiceSecret({
     baseUrl: "http://100.64.0.11:8880",
   });
 
-  it("drops the saved voice only when the server address changes", () => {
-    expect(voiceServerChanged(undefined, first)).toBe(false);
-    expect(voiceServerChanged(first, sameWithModel)).toBe(false);
-    expect(voiceServerChanged(first, other)).toBe(true);
+  it("drops saved voices only when the server or speech model changes", () => {
+    expect(voiceChoicesChanged(undefined, first)).toBe(false);
+    expect(voiceChoicesChanged(first, sameWithKey)).toBe(false);
+    expect(voiceChoicesChanged(first, otherModel)).toBe(true);
+    expect(voiceChoicesChanged(first, otherServer)).toBe(true);
+    expect(voiceChoicesChanged("sk-hosted-key", "sk-other-key")).toBe(false);
+  });
+});
+
+describe("persistVoiceCredential", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("re-picks voices for every space when a self-hosted server changes", async () => {
+    const previous = adapters.serializeOpenAiCompatibleVoiceSecret({
+      baseUrl: "http://100.64.0.10:8810",
+    });
+    vi.spyOn(adapters, "createVoiceProvider").mockReturnValue({
+      verify: vi.fn().mockResolvedValue({ ok: true }),
+      listVoices: vi.fn().mockResolvedValue([
+        { id: "bm_george", label: "George" },
+        { id: "af_sky", label: "Sky" },
+      ]),
+    } as never);
+    vi.spyOn(db, "findVoiceCredential").mockResolvedValue({
+      id: "cred-1",
+      secretId: "old-secret",
+      provider: "openai-compatible",
+    } as never);
+    const select = vi.spyOn(db, "selectSpaceVoicePreference").mockResolvedValue(undefined as never);
+    vi.spyOn(db, "deleteUnreferencedCredentialSecret").mockResolvedValue(undefined as never);
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      userVoiceCredential: {
+        findFirst: vi.fn().mockResolvedValue({ id: "cred-1", secretId: "old-secret" }),
+        update: vi.fn().mockResolvedValue({ id: "cred-1", provider: "openai-compatible" }),
+      },
+      secret: { create: vi.fn().mockResolvedValue({ id: "new-secret" }) },
+      spaceVoicePreference: {
+        findUnique: vi.fn().mockResolvedValue({ voiceId: "af_heart", speechModel: null }),
+        updateMany,
+      },
+    };
+    const deps = {
+      prisma: {
+        secret: { findFirst: vi.fn().mockResolvedValue({ id: "old-secret", ciphertext: "c" }) },
+        $transaction: vi.fn((run: (client: typeof tx) => unknown) => run(tx)),
+      },
+      secrets: {
+        load: vi.fn().mockReturnValue(previous),
+        put: vi.fn().mockResolvedValue({ id: "new-secret", ciphertext: "n" }),
+      },
+    } as unknown as VoiceDeps;
+
+    const saved = await persistVoiceCredential(deps, actor, {
+      provider: "openai-compatible",
+      plaintext: "",
+      voiceId: "af_heart",
+      baseUrl: "http://100.64.0.11:8880",
+    });
+
+    expect(saved.voiceId).toBe("bm_george");
+    expect(select).toHaveBeenCalledWith(tx, actor, "cred-1", "bm_george", null);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        userId: actor.userId,
+        credentialId: "cred-1",
+        spaceId: { not: actor.spaceId },
+        voiceId: { notIn: ["bm_george", "af_sky"] },
+      },
+      data: { voiceId: "bm_george" },
+    });
   });
 });

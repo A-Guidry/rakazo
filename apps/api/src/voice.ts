@@ -110,12 +110,15 @@ export async function voiceCredentialServer(
   }
 }
 
-/** A different self-hosted server has its own voices, so the old choice cannot carry over. */
-export function voiceServerChanged(previousPlaintext: string | undefined, plaintext: string) {
+/**
+ * Another server or speech model has its own voices, so saved voice choices cannot carry
+ * over. Only self-hosted connections can change either while keeping the credential.
+ */
+export function voiceChoicesChanged(previousPlaintext: string | undefined, plaintext: string) {
   const previous = previousPlaintext ? openAiCompatibleVoiceServer(previousPlaintext) : undefined;
-  return Boolean(
-    previous && previous.endpoint !== openAiCompatibleVoiceServer(plaintext)?.endpoint,
-  );
+  if (!previous) return false;
+  const next = openAiCompatibleVoiceServer(plaintext);
+  return previous.endpoint !== next?.endpoint || previous.ttsModel !== next?.ttsModel;
 }
 
 /**
@@ -230,7 +233,7 @@ export async function persistVoiceCredential(
     input.provider === OPENAI_COMPATIBLE_VOICE_PROVIDER_ID
       ? openAiCompatibleVoiceServer(plaintext)
       : undefined;
-  const serverChanged = voiceServerChanged(previous?.apiKey, plaintext);
+  const choicesChanged = voiceChoicesChanged(previous?.apiKey, plaintext);
   const requestedSpeechModel =
     input.provider === FISH_AUDIO_PROVIDER && input.speechModel !== undefined
       ? fishSpeechModelValue(input.speechModel)
@@ -240,10 +243,12 @@ export async function persistVoiceCredential(
   if (!verified.ok) {
     throw new ORPCError("BAD_REQUEST", { message: verified.message ?? "That key was rejected." });
   }
-  let voiceId = serverChanged ? "" : (input.voiceId?.trim() ?? "");
+  let voiceId = choicesChanged ? "" : (input.voiceId?.trim() ?? "");
+  let validVoiceIds: string[] = [];
   if (!voiceId) {
     const voices = await provider.listVoices(plaintext, voiceContext(actor, input.signal));
     voiceId = voices[0]?.id ?? "";
+    validVoiceIds = voices.map((voice) => voice.id);
   }
   const stored = await deps.secrets.put(plaintext, voiceContext(actor, input.signal));
   const cred = await withSerializableRetry(() =>
@@ -285,12 +290,26 @@ export async function persistVoiceCredential(
               },
             })
           : null;
-        const selectedVoiceId = voiceId || (serverChanged ? "" : previousPreference?.voiceId) || "";
+        const selectedVoiceId =
+          voiceId || (choicesChanged ? "" : previousPreference?.voiceId) || "";
         const speechModel =
           requestedSpeechModel !== undefined
             ? requestedSpeechModel
             : previousPreference?.speechModel;
         await selectSpaceVoicePreference(tx, actor, credential.id, selectedVoiceId, speechModel);
+        if (existing && choicesChanged) {
+          // The credential is account-wide but each space keeps its own voice. Move every
+          // other space whose voice the new server or model lacks onto the new default.
+          await tx.spaceVoicePreference.updateMany({
+            where: {
+              userId: actor.userId,
+              credentialId: existing.id,
+              spaceId: { not: actor.spaceId },
+              voiceId: { notIn: validVoiceIds },
+            },
+            data: { voiceId: selectedVoiceId },
+          });
+        }
         if (existing) {
           await deleteUnreferencedCredentialSecret(tx, {
             credentialKind: "voice",
