@@ -161,7 +161,7 @@ export function openAiCompatibleVoiceServer(
  * Any private address is allowed, so echo only a short, single-line error from the
  * server: enough for "model not found", too little to read another service through it.
  */
-function serverError(status: number, what: string, body: unknown): string {
+function serverError(status: number, what: string, body: unknown, apiKey?: string): string {
   const detail =
     body && typeof body === "object"
       ? (body as { detail?: unknown; error?: unknown; message?: unknown })
@@ -169,8 +169,9 @@ function serverError(status: number, what: string, body: unknown): string {
   const raw = [detail.detail, detail.message, detail.error].find(
     (value): value is string => typeof value === "string" && value.trim() !== "",
   );
-  const short = raw
-    ?.replace(/\p{Cc}+/gu, " ")
+  const redacted = apiKey ? raw?.replaceAll(apiKey, "[redacted]") : raw;
+  const short = redacted
+    ?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
     .trim()
     .slice(0, MAX_SERVER_DETAIL_LENGTH);
   return voiceHttpError(status, PROVIDER_NAME, what, short ? { detail: short } : null);
@@ -198,7 +199,7 @@ function voiceInfo(id: string, name?: string): VoiceInfo {
   const kokoro = KOKORO_ID.exec(id);
   if (!kokoro) {
     const label = name
-      ?.replace(/\p{Cc}+/gu, " ")
+      ?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
       .trim()
       .slice(0, MAX_VOICE_LABEL_LENGTH);
     return { id, label: label || id };
@@ -323,8 +324,7 @@ export class OpenAiCompatibleVoiceProvider implements VoiceProvider {
       };
     } catch (error) {
       if (context.signal.aborted) throw error;
-      const reason = error instanceof Error && !isNetworkError(error) ? ` ${error.message}` : "";
-      return { ok: false, message: `Couldn't reach the speech server at ${origin}.${reason}` };
+      return { ok: false, message: `Couldn't reach the speech server at ${origin}.` };
     }
   }
 
@@ -369,12 +369,13 @@ export class OpenAiCompatibleVoiceProvider implements VoiceProvider {
       }),
       signal,
     });
-    if (!res.ok) throw new Error(serverError(res.status, "speaking", await readVoiceJson(res)));
+    if (!res.ok)
+      throw new Error(serverError(res.status, "speaking", await readVoiceJson(res), secret.apiKey));
     const type = mediaType(res);
     // mp3 was requested; servers label it audio/mpeg or audio/mp3. Anything else is not a clip.
-    if (type && type !== "audio/mpeg" && type !== "audio/mp3") {
+    if (type !== "audio/mpeg" && type !== "audio/mp3") {
       await res.body?.cancel().catch(() => undefined);
-      throw new Error(`${PROVIDER_NAME} returned ${type} instead of MP3 audio.`);
+      throw new Error(`${PROVIDER_NAME} did not return MP3 audio.`);
     }
     return { bytes: await readVoiceAudio(res, signal), mimeType: "audio/mpeg" };
   }
@@ -402,12 +403,15 @@ export class OpenAiCompatibleVoiceProvider implements VoiceProvider {
       signal: voiceDeadline(request.signal ?? context.signal, TRANSCRIBE_DEADLINE_MS),
     });
     const body = await readVoiceJson(res, { requireValid: false, rawOnInvalid: true });
-    if (!res.ok) throw new Error(serverError(res.status, "transcribing", body));
+    if (!res.ok) throw new Error(serverError(res.status, "transcribing", body, secret.apiKey));
+    const type = mediaType(res);
+    if (
+      (type && type !== "text/plain" && type !== "application/json") ||
+      (typeof body === "string" && type && type !== "text/plain")
+    ) {
+      throw new Error(`${PROVIDER_NAME} did not return a transcript.`);
+    }
     if (typeof body === "string") {
-      const type = mediaType(res);
-      if (type && type !== "text/plain") {
-        throw new Error(`${PROVIDER_NAME} returned ${type} instead of a transcript.`);
-      }
       return { text: body.trim() };
     }
     return { text: String((body as { text?: unknown } | null)?.text ?? "").trim() };

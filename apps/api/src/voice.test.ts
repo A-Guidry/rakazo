@@ -12,6 +12,7 @@ import {
   mountVoiceHttpRoutes,
   persistVoiceCredential,
   synthesizeVoice,
+  toVoiceCredential,
   toVoiceStatus,
   updateVoiceSpeechModel,
   type VoiceDeps,
@@ -565,7 +566,15 @@ describe("voiceCredentialServer", () => {
       ttsModel: "kokoro",
       sttModel: adapters.DEFAULT_COMPATIBLE_STT_MODEL,
     });
-    expect(JSON.stringify(server)).not.toContain("local-test-key");
+    const output = toVoiceCredential({
+      id: "cred-1",
+      provider: "openai-compatible",
+      isDefault: true,
+      voiceId: "af_heart",
+      server,
+    });
+    expect(JSON.stringify(output)).not.toContain("local-test-key");
+    expect(output).not.toHaveProperty("apiKey");
   });
 
   it("does not decrypt hosted keys and survives an unreadable or unreachable secret", async () => {
@@ -670,12 +679,15 @@ describe("persistVoiceCredential", () => {
 
       const saved = await persistVoiceCredential(deps, actor, {
         provider: "openai-compatible",
-        plaintext: "",
+        plaintext: "local-test-key",
         voiceId: "af_heart",
         ...next,
       });
 
       expect(saved.voiceId).toBe("bm_george");
+      expect(JSON.stringify(saved)).not.toContain("local-test-key");
+      expect(saved).not.toHaveProperty("apiKey");
+      expect(saved).not.toHaveProperty("secretId");
       expect(select).toHaveBeenCalledWith(tx, actor, "cred-1", "bm_george", null);
       expect(updateMany).toHaveBeenCalledWith({
         where: {
@@ -688,4 +700,26 @@ describe("persistVoiceCredential", () => {
       });
     },
   );
+});
+
+it.each([
+  "http://169.254.169.254",
+  "http://169.254.1.2",
+  "http://[fd00:ec2::254]",
+  "http://[fe80::1]",
+  "http://metadata.google.internal",
+])("refuses connecting a metadata or link-local speech server: %s", async (baseUrl) => {
+  await expect(
+    persistVoiceCredential(
+      {
+        prisma: { userVoiceCredential: { findFirst: vi.fn().mockResolvedValue(null) } },
+      } as unknown as VoiceDeps,
+      actor,
+      {
+        provider: "openai-compatible",
+        plaintext: "",
+        baseUrl,
+      },
+    ),
+  ).rejects.toThrow(/blocked metadata or link-local/);
 });
