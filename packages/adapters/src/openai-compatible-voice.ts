@@ -23,6 +23,7 @@ import { createOpenAiCompatibleFetch } from "./pi-openai-compatible-provider.js"
 import {
   readVoiceAudio,
   readVoiceJson,
+  readVoiceText,
   speechUploadName,
   voiceDeadline,
   voiceHttpError,
@@ -402,19 +403,32 @@ export class OpenAiCompatibleVoiceProvider implements VoiceProvider {
       body: form,
       signal: voiceDeadline(request.signal ?? context.signal, TRANSCRIBE_DEADLINE_MS),
     });
-    const body = await readVoiceJson(res, { requireValid: false, rawOnInvalid: true });
-    if (!res.ok) throw new Error(serverError(res.status, "transcribing", body, secret.apiKey));
+    const raw = await readVoiceText(res);
     const type = mediaType(res);
-    if (
-      (type && type !== "text/plain" && type !== "application/json") ||
-      (typeof body === "string" && type && type !== "text/plain")
-    ) {
+    if (!res.ok) {
+      throw new Error(serverError(res.status, "transcribing", parseJson(raw), secret.apiKey));
+    }
+    if (type && type !== "text/plain" && type !== "application/json") {
       throw new Error(`${PROVIDER_NAME} did not return a transcript.`);
     }
-    if (typeof body === "string") {
-      return { text: body.trim() };
+    const parsed = parseJson(raw);
+    if (parsed && typeof parsed === "object") {
+      return { text: String((parsed as { text?: unknown }).text ?? "").trim() };
     }
-    return { text: String((body as { text?: unknown } | null)?.text ?? "").trim() };
+    // Anything else that is not labelled JSON is the transcript itself, even "1234" or "null".
+    if (type === "application/json" || raw === null) {
+      throw new Error(`${PROVIDER_NAME} did not return a transcript.`);
+    }
+    return { text: raw.trim() };
+  }
+}
+
+function parseJson(raw: string | null): unknown {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
   }
 }
 

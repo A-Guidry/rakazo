@@ -331,6 +331,21 @@ describe("OpenAiCompatibleVoiceProvider", () => {
     ).resolves.toEqual({ text: "hello there" });
   });
 
+  it.each(["1234", "true", "null", '"quoted"'])(
+    "keeps a text/plain transcript that looks like JSON: %s",
+    async (spoken) => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(new Response(spoken, { headers: { "content-type": "text/plain" } }));
+      await expect(
+        provider(fetchMock).transcribe(
+          { audio: new Uint8Array([1]), mimeType: "audio/webm", apiKey: keyless },
+          ctx,
+        ),
+      ).resolves.toEqual({ text: spoken });
+    },
+  );
+
   it("refuses a non-text, non-JSON transcription reply", async () => {
     const fetchMock = vi
       .fn()
