@@ -119,11 +119,8 @@ export function VoiceSettingsOverlay({
       await rpc.voice.connect({
         provider: selected.id,
         apiKey: apiKey.trim(),
-        voiceId:
-          selfHosted &&
-          (baseUrl.trim() !== credential?.endpoint || ttsModel.trim() !== credential?.ttsModel)
-            ? undefined
-            : voiceId || undefined,
+        // The server drops this voice when the address or speech model really changed.
+        voiceId: voiceId || undefined,
         ...(selected.id === "fish-audio" ? { speechModel: speechModel.trim() } : {}),
         ...(selfHosted
           ? {

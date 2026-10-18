@@ -235,13 +235,13 @@ it("connects a self-hosted speech server by URL without a key", async () => {
 });
 
 it.each([
-  { field: "Server URL", value: "http://100.64.0.11:8880/v1", keepVoice: false },
-  { field: "Speech model", value: "new-model", keepVoice: false },
-  { field: "Transcription model", value: "new-transcriber", keepVoice: true },
-  { field: "API key", value: "replacement-test-key", keepVoice: true },
+  { field: "Server URL", value: "http://100.64.0.11:8880/v1" },
+  { field: "Speech model", value: "new-model" },
+  { field: "Transcription model", value: "new-transcriber" },
+  { field: "API key", value: "replacement-test-key" },
 ])(
   "restores saved self-hosted fields and reconnects after editing $field",
-  async ({ field, value, keepVoice }) => {
+  async ({ field, value }) => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     voice.connect.mockReset();
     const saved = {
@@ -290,7 +290,8 @@ it.each([
       expect(voice.connect).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: saved.provider,
-          voiceId: keepVoice ? saved.voiceId : undefined,
+          // The API decides whether a new server or model invalidates this voice.
+          voiceId: saved.voiceId,
           baseUrl: field === "Server URL" ? value : saved.endpoint,
           ttsModel: field === "Speech model" ? value : saved.ttsModel,
           sttModel: field === "Transcription model" ? value : saved.sttModel,
