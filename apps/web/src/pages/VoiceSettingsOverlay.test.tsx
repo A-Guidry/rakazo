@@ -153,3 +153,83 @@ it("saves a Fish speech model on the existing provider pane", async () => {
     vi.unstubAllGlobals();
   }
 });
+
+function labelledInput(container: HTMLElement, text: string): HTMLInputElement {
+  const found = [...container.querySelectorAll("input")].find(
+    (input) => container.querySelector(`label[for="${input.id}"]`)?.textContent === text,
+  );
+  if (!found) throw new Error(`Missing field: ${text}`);
+  return found;
+}
+
+it("connects a self-hosted speech server by URL without a key", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  voice.connect.mockReset();
+  voice.catalog.mockResolvedValue([
+    { id: "openai-compatible", name: "Self-hosted", description: "", transcribe: true },
+  ]);
+  voice.credentials.mockResolvedValue([]);
+  voice.status.mockResolvedValue({
+    configured: false,
+    ready: false,
+    transcribe: false,
+    provider: null,
+    voiceId: "",
+  });
+  voice.connect.mockResolvedValue({
+    id: "cred-local",
+    provider: "openai-compatible",
+    hasKey: true,
+    isDefault: true,
+    voiceId: "af_heart",
+    speechModel: "",
+    transcribe: true,
+    endpoint: "http://100.64.0.10:8810/v1",
+  });
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const type = async (input: HTMLInputElement, value: string) => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const connect = () =>
+    [...container.querySelectorAll("button")].find((entry) => entry.textContent === "Connect");
+  try {
+    await act(async () => {
+      root.render(<VoiceSettingsOverlay embedded onClose={() => undefined} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(labelledInput(container, "API key").placeholder).toBe("Optional");
+    expect(labelledInput(container, "Speech model").placeholder).toBe(
+      "mlx-community/Kokoro-82M-bf16",
+    );
+    expect(connect()?.disabled).toBe(true);
+
+    await type(labelledInput(container, "Server URL"), " http://100.64.0.10:8810 ");
+    expect(connect()?.disabled).toBe(false);
+    await act(async () => {
+      connect()?.click();
+    });
+
+    expect(voice.connect).toHaveBeenCalledWith({
+      provider: "openai-compatible",
+      apiKey: "",
+      voiceId: undefined,
+      baseUrl: "http://100.64.0.10:8810",
+      ttsModel: undefined,
+      sttModel: undefined,
+    });
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});

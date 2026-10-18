@@ -98,3 +98,32 @@ test("voice settings connect a key, speak a reply, and open a call", async ({ pa
     [],
   );
 });
+
+test("voice settings take a self-hosted speech server by URL", async ({ page }, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `voice-local-${stamp}@rakazo.test`, "password12", `Voice Local ${stamp}`);
+  await completeOnboarding(page);
+
+  await openUserSettings(page, "voice");
+  const settings = page.getByTestId("voice-settings");
+  await expect(settings).toBeVisible();
+  await settings.getByRole("button", { name: /Self-hosted/ }).click();
+  await expect(settings.getByLabel("API key", { exact: true })).toHaveAttribute(
+    "placeholder",
+    "Optional",
+  );
+  const connect = settings.getByRole("button", { name: "Connect", exact: true });
+  await expect(connect).toBeDisabled();
+
+  // Nothing listens on the discard port, so the server check fails without a network.
+  await settings.getByLabel("Server URL", { exact: true }).fill("http://127.0.0.1:9");
+  await expect(connect).toBeEnabled();
+  await captureScreenshot(page, testInfo, "voice-settings-self-hosted");
+  await connect.click();
+  await expect(
+    settings.getByText("Couldn't reach the speech server at http://127.0.0.1:9."),
+  ).toBeVisible();
+
+  const credentials = await rpc<unknown[]>(page, "voice/credentials");
+  expect(credentials).toEqual([]);
+});

@@ -8,6 +8,9 @@ import {
   MAX_SPEAK_CHARS,
   MAX_TRANSCRIBE_BYTES,
   NoVoiceConfigured,
+  OPENAI_COMPATIBLE_VOICE_PROVIDER_ID,
+  openAiCompatibleVoiceEndpoint,
+  serializeOpenAiCompatibleVoiceSecret,
   voiceCatalogEntry,
 } from "@rakazo/adapters";
 import type { Actor, VoiceCredential, VoiceStatus } from "@rakazo/contracts";
@@ -69,6 +72,7 @@ export function toVoiceCredential(row: {
   isDefault: boolean;
   voiceId: string;
   speechModel?: string | null;
+  endpoint?: string;
 }): VoiceCredential {
   return {
     id: row.id,
@@ -78,7 +82,65 @@ export function toVoiceCredential(row: {
     voiceId: row.voiceId,
     speechModel: row.speechModel ?? "",
     transcribe: Boolean(catalogEntry(row.provider)?.transcribe),
+    endpoint: row.endpoint ?? "",
   };
+}
+
+/** A self-hosted connection's base URL, read from its secret. Empty for hosted providers. */
+export async function voiceCredentialEndpoint(
+  deps: VoiceDeps,
+  actor: Actor,
+  row: { provider: string; secretId: string },
+): Promise<string> {
+  if (row.provider !== OPENAI_COMPATIBLE_VOICE_PROVIDER_ID) return "";
+  const secret = await deps.prisma.secret.findFirst({
+    where: { id: row.secretId, userId: actor.userId, spaceId: null },
+  });
+  if (!secret) return "";
+  try {
+    return (
+      openAiCompatibleVoiceEndpoint(await deps.secrets.load(secret.ciphertext, secret.id)) ?? ""
+    );
+  } catch {
+    // An unreadable secret still lists the connection; reconnecting replaces it.
+    return "";
+  }
+}
+
+/**
+ * The secret to store. Hosted providers keep the bare key; a self-hosted server stores
+ * its base URL, optional key, and model ids, validated like model connections.
+ */
+export function voiceCredentialPlaintext(input: {
+  provider: string;
+  plaintext: string;
+  baseUrl?: string;
+  ttsModel?: string;
+  sttModel?: string;
+  /** The stored secret for this provider; blank fields keep its key and models. */
+  previousPlaintext?: string;
+}): string {
+  if (input.provider !== OPENAI_COMPATIBLE_VOICE_PROVIDER_ID) {
+    if (input.plaintext.trim().length < 8) {
+      throw new ORPCError("BAD_REQUEST", { message: "Enter an API key." });
+    }
+    return input.plaintext;
+  }
+  try {
+    return serializeOpenAiCompatibleVoiceSecret(
+      {
+        baseUrl: input.baseUrl ?? "",
+        apiKey: input.plaintext,
+        ttsModel: input.ttsModel,
+        sttModel: input.sttModel,
+      },
+      input.previousPlaintext,
+    );
+  } catch (error) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: error instanceof Error ? error.message : "That server URL is not valid.",
+    });
+  }
 }
 
 const FISH_AUDIO_PROVIDER = "fish-audio";
@@ -138,27 +200,36 @@ export async function persistVoiceCredential(
     plaintext: string;
     voiceId?: string;
     speechModel?: string;
+    baseUrl?: string;
+    ttsModel?: string;
+    sttModel?: string;
     signal?: AbortSignal;
   },
 ): Promise<VoiceCredential> {
   if (!isVoiceProviderId(input.provider)) {
     throw new ORPCError("BAD_REQUEST", { message: "Unknown voice provider." });
   }
+  const previous =
+    input.provider === OPENAI_COMPATIBLE_VOICE_PROVIDER_ID
+      ? // An unreadable old secret only means nothing is inherited; the form must be complete.
+        await loadVoiceCredential(deps, actor, input.provider).catch(() => null)
+      : null;
+  const plaintext = voiceCredentialPlaintext({ ...input, previousPlaintext: previous?.apiKey });
   const requestedSpeechModel =
     input.provider === FISH_AUDIO_PROVIDER && input.speechModel !== undefined
       ? fishSpeechModelValue(input.speechModel)
       : undefined;
   const provider = createVoiceProvider(input.provider);
-  const verified = await provider.verify(input.plaintext, voiceContext(actor, input.signal));
+  const verified = await provider.verify(plaintext, voiceContext(actor, input.signal));
   if (!verified.ok) {
     throw new ORPCError("BAD_REQUEST", { message: verified.message ?? "That key was rejected." });
   }
   let voiceId = input.voiceId?.trim() ?? "";
   if (!voiceId) {
-    const voices = await provider.listVoices(input.plaintext, voiceContext(actor, input.signal));
+    const voices = await provider.listVoices(plaintext, voiceContext(actor, input.signal));
     voiceId = voices[0]?.id ?? "";
   }
-  const stored = await deps.secrets.put(input.plaintext, voiceContext(actor, input.signal));
+  const stored = await deps.secrets.put(plaintext, voiceContext(actor, input.signal));
   const cred = await withSerializableRetry(() =>
     deps.prisma.$transaction(
       async (tx) => {
@@ -216,6 +287,10 @@ export async function persistVoiceCredential(
           isDefault: true,
           voiceId: selectedVoiceId,
           speechModel: speechModel ?? "",
+          endpoint:
+            input.provider === OPENAI_COMPATIBLE_VOICE_PROVIDER_ID
+              ? (openAiCompatibleVoiceEndpoint(plaintext) ?? "")
+              : "",
         };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

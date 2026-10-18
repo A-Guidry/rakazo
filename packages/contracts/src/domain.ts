@@ -1230,6 +1230,8 @@ export const VoiceCredentialSchema = z.object({
   /** Fish speech-model override. Empty uses the deployment default. */
   speechModel: z.string(),
   transcribe: z.boolean(),
+  /** Self-hosted server base URL. Empty for hosted providers. */
+  endpoint: z.string().default(""),
 });
 export type VoiceCredential = z.infer<typeof VoiceCredentialSchema>;
 

@@ -299,6 +299,7 @@ import {
   toVoiceStatus,
   updateVoiceSpeechModel,
   voiceContext,
+  voiceCredentialEndpoint,
 } from "./voice.js";
 
 const MAX_COMPUTER_TEXT_FILE_BYTES = 2 * 1024 * 1024;
@@ -6163,15 +6164,18 @@ export function createRouter(deps: RouterDeps) {
           },
           orderBy: newestVoiceCredentialOrder,
         });
-        return rows.map((row) => {
-          const preference = row.preferences[0];
-          return toVoiceCredential({
-            ...row,
-            isDefault: preference?.isDefault ?? false,
-            voiceId: preference?.voiceId ?? "",
-            speechModel: preference?.speechModel ?? "",
-          });
-        });
+        return Promise.all(
+          rows.map(async (row) => {
+            const preference = row.preferences[0];
+            return toVoiceCredential({
+              ...row,
+              isDefault: preference?.isDefault ?? false,
+              voiceId: preference?.voiceId ?? "",
+              speechModel: preference?.speechModel ?? "",
+              endpoint: await voiceCredentialEndpoint(deps, context.actor, row),
+            });
+          }),
+        );
       }),
       connect: authed.voice.connect.handler(async ({ context, input }) =>
         persistVoiceCredential(deps, context.actor, {
@@ -6179,6 +6183,9 @@ export function createRouter(deps: RouterDeps) {
           plaintext: input.apiKey,
           voiceId: input.voiceId,
           speechModel: input.speechModel,
+          baseUrl: input.baseUrl,
+          ttsModel: input.ttsModel,
+          sttModel: input.sttModel,
           signal: context.signal,
         }),
       ),

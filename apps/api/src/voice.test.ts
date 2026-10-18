@@ -13,6 +13,8 @@ import {
   toVoiceStatus,
   updateVoiceSpeechModel,
   type VoiceDeps,
+  voiceCredentialEndpoint,
+  voiceCredentialPlaintext,
 } from "./voice.js";
 
 describe("toVoiceStatus", () => {
@@ -479,5 +481,100 @@ describe("synthesizeVoice", () => {
     await synthesizeVoice(deps, actor, { text: "Hello" });
 
     expect(synthesize.mock.calls[0]?.[0]).toMatchObject({ model: undefined });
+  });
+});
+
+describe("voiceCredentialPlaintext", () => {
+  it("keeps a hosted provider's key as the secret and requires one", () => {
+    expect(voiceCredentialPlaintext({ provider: "openai", plaintext: "sk-test-key" })).toBe(
+      "sk-test-key",
+    );
+    expect(() => voiceCredentialPlaintext({ provider: "openai", plaintext: "  " })).toThrow(
+      "Enter an API key.",
+    );
+  });
+
+  it("stores a self-hosted server's address and models without a key", () => {
+    const plaintext = voiceCredentialPlaintext({
+      provider: "openai-compatible",
+      plaintext: "",
+      baseUrl: "http://100.64.0.10:8810",
+      ttsModel: "kokoro",
+    });
+    expect(JSON.parse(plaintext)).toEqual({
+      kind: "openai_compatible",
+      baseUrl: "http://100.64.0.10:8810/v1",
+      ttsModel: "kokoro",
+      sttModel: adapters.DEFAULT_COMPATIBLE_STT_MODEL,
+    });
+  });
+
+  it("keeps the stored key when reconnecting to the same server with the key left blank", () => {
+    const previousPlaintext = adapters.serializeOpenAiCompatibleVoiceSecret({
+      baseUrl: "http://100.64.0.10:8810",
+      apiKey: "local-test-key",
+    });
+    const plaintext = voiceCredentialPlaintext({
+      provider: "openai-compatible",
+      plaintext: "",
+      baseUrl: "http://100.64.0.10:8810/v1",
+      previousPlaintext,
+    });
+    expect(JSON.parse(plaintext)).toMatchObject({ apiKey: "local-test-key" });
+  });
+
+  it("rejects a public server address as a bad request", () => {
+    expect(() =>
+      voiceCredentialPlaintext({
+        provider: "openai-compatible",
+        plaintext: "",
+        baseUrl: "https://speech.example.com",
+      }),
+    ).toThrow(/Public model endpoints are blocked/);
+  });
+});
+
+describe("voiceCredentialEndpoint", () => {
+  const plaintext = adapters.serializeOpenAiCompatibleVoiceSecret({
+    baseUrl: "http://100.64.0.10:8810",
+    apiKey: "local-test-key",
+  });
+
+  function deps(load: () => string) {
+    return {
+      prisma: {
+        secret: {
+          findFirst: vi.fn().mockResolvedValue({ id: "secret-1", ciphertext: "cipher" }),
+        },
+      },
+      secrets: { load: vi.fn(load), put: vi.fn() },
+    } as unknown as VoiceDeps;
+  }
+
+  it("shows the base URL but never the key", async () => {
+    const endpoint = await voiceCredentialEndpoint(
+      deps(() => plaintext),
+      actor,
+      { provider: "openai-compatible", secretId: "secret-1" },
+    );
+    expect(endpoint).toBe("http://100.64.0.10:8810/v1");
+    expect(endpoint).not.toContain("local-test-key");
+  });
+
+  it("does not decrypt hosted keys and survives an unreadable secret", async () => {
+    const hosted = deps(() => "sk-test-key");
+    expect(
+      await voiceCredentialEndpoint(hosted, actor, { provider: "openai", secretId: "secret-1" }),
+    ).toBe("");
+    expect(hosted.secrets.load).not.toHaveBeenCalled();
+    const broken = deps(() => {
+      throw new Error("bad ciphertext");
+    });
+    expect(
+      await voiceCredentialEndpoint(broken, actor, {
+        provider: "openai-compatible",
+        secretId: "secret-1",
+      }),
+    ).toBe("");
   });
 });
