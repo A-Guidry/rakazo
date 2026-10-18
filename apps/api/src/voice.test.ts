@@ -614,64 +614,78 @@ describe("persistVoiceCredential", () => {
     vi.restoreAllMocks();
   });
 
-  it("re-picks voices for every space when a self-hosted server changes", async () => {
-    const previous = adapters.serializeOpenAiCompatibleVoiceSecret({
-      baseUrl: "http://100.64.0.10:8810",
-    });
-    vi.spyOn(adapters, "createVoiceProvider").mockReturnValue({
-      verify: vi.fn().mockResolvedValue({ ok: true }),
-      listVoices: vi.fn().mockResolvedValue([
-        { id: "bm_george", label: "George" },
-        { id: "af_sky", label: "Sky" },
-      ]),
-    } as never);
-    vi.spyOn(db, "findVoiceCredential").mockResolvedValue({
-      id: "cred-1",
-      secretId: "old-secret",
-      provider: "openai-compatible",
-    } as never);
-    const select = vi.spyOn(db, "selectSpaceVoicePreference").mockResolvedValue(undefined as never);
-    vi.spyOn(db, "deleteUnreferencedCredentialSecret").mockResolvedValue(undefined as never);
-    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
-    const tx = {
-      userVoiceCredential: {
-        findFirst: vi.fn().mockResolvedValue({ id: "cred-1", secretId: "old-secret" }),
-        update: vi.fn().mockResolvedValue({ id: "cred-1", provider: "openai-compatible" }),
-      },
-      secret: { create: vi.fn().mockResolvedValue({ id: "new-secret" }) },
-      spaceVoicePreference: {
-        findUnique: vi.fn().mockResolvedValue({ voiceId: "af_heart", speechModel: null }),
-        updateMany,
-      },
-    };
-    const deps = {
-      prisma: {
-        secret: { findFirst: vi.fn().mockResolvedValue({ id: "old-secret", ciphertext: "c" }) },
-        $transaction: vi.fn((run: (client: typeof tx) => unknown) => run(tx)),
-      },
-      secrets: {
-        load: vi.fn().mockReturnValue(previous),
-        put: vi.fn().mockResolvedValue({ id: "new-secret", ciphertext: "n" }),
-      },
-    } as unknown as VoiceDeps;
+  it.each([
+    {
+      change: "server",
+      previous: { baseUrl: "http://100.64.0.10:8810" },
+      next: { baseUrl: "http://100.64.0.11:8880" },
+    },
+    {
+      change: "speech model",
+      previous: { baseUrl: "http://100.64.0.10:8810", ttsModel: "old-model" },
+      next: { baseUrl: "http://100.64.0.10:8810", ttsModel: "new-model" },
+    },
+  ])(
+    "re-picks voices for every space when the self-hosted $change changes",
+    async ({ previous: before, next }) => {
+      const previous = adapters.serializeOpenAiCompatibleVoiceSecret(before);
+      vi.spyOn(adapters, "createVoiceProvider").mockReturnValue({
+        verify: vi.fn().mockResolvedValue({ ok: true }),
+        listVoices: vi.fn().mockResolvedValue([
+          { id: "bm_george", label: "George" },
+          { id: "af_sky", label: "Sky" },
+        ]),
+      } as never);
+      vi.spyOn(db, "findVoiceCredential").mockResolvedValue({
+        id: "cred-1",
+        secretId: "old-secret",
+        provider: "openai-compatible",
+      } as never);
+      const select = vi
+        .spyOn(db, "selectSpaceVoicePreference")
+        .mockResolvedValue(undefined as never);
+      vi.spyOn(db, "deleteUnreferencedCredentialSecret").mockResolvedValue(undefined as never);
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const tx = {
+        userVoiceCredential: {
+          findFirst: vi.fn().mockResolvedValue({ id: "cred-1", secretId: "old-secret" }),
+          update: vi.fn().mockResolvedValue({ id: "cred-1", provider: "openai-compatible" }),
+        },
+        secret: { create: vi.fn().mockResolvedValue({ id: "new-secret" }) },
+        spaceVoicePreference: {
+          findUnique: vi.fn().mockResolvedValue({ voiceId: "af_heart", speechModel: null }),
+          updateMany,
+        },
+      };
+      const deps = {
+        prisma: {
+          secret: { findFirst: vi.fn().mockResolvedValue({ id: "old-secret", ciphertext: "c" }) },
+          $transaction: vi.fn((run: (client: typeof tx) => unknown) => run(tx)),
+        },
+        secrets: {
+          load: vi.fn().mockReturnValue(previous),
+          put: vi.fn().mockResolvedValue({ id: "new-secret", ciphertext: "n" }),
+        },
+      } as unknown as VoiceDeps;
 
-    const saved = await persistVoiceCredential(deps, actor, {
-      provider: "openai-compatible",
-      plaintext: "",
-      voiceId: "af_heart",
-      baseUrl: "http://100.64.0.11:8880",
-    });
+      const saved = await persistVoiceCredential(deps, actor, {
+        provider: "openai-compatible",
+        plaintext: "",
+        voiceId: "af_heart",
+        ...next,
+      });
 
-    expect(saved.voiceId).toBe("bm_george");
-    expect(select).toHaveBeenCalledWith(tx, actor, "cred-1", "bm_george", null);
-    expect(updateMany).toHaveBeenCalledWith({
-      where: {
-        userId: actor.userId,
-        credentialId: "cred-1",
-        spaceId: { not: actor.spaceId },
-        voiceId: { notIn: ["bm_george", "af_sky"] },
-      },
-      data: { voiceId: "bm_george" },
-    });
-  });
+      expect(saved.voiceId).toBe("bm_george");
+      expect(select).toHaveBeenCalledWith(tx, actor, "cred-1", "bm_george", null);
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: actor.userId,
+          credentialId: "cred-1",
+          spaceId: { not: actor.spaceId },
+          voiceId: { notIn: ["bm_george", "af_sky"] },
+        },
+        data: { voiceId: "bm_george" },
+      });
+    },
+  );
 });
