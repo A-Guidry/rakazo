@@ -37,7 +37,7 @@ export const VOICE_CATALOG = [
   {
     id: OPENAI_COMPATIBLE_VOICE_PROVIDER_ID,
     name: "Self-hosted",
-    description: "Your own OpenAI-compatible speech server, such as Kokoro and Whisper.",
+    description: "Any OpenAI-compatible speech server, like Kokoro or Whisper.",
     transcribe: true,
   },
 ] as const;

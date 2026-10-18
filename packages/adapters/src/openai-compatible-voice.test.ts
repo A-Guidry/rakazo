@@ -131,6 +131,14 @@ describe("parseCompatibleVoiceList", () => {
     ]);
   });
 
+  it("keeps a server's voice list short: capped count and single-line names", () => {
+    const many = Array.from({ length: 800 }, (_, index) => ({ id: `v${index}`, name: "x" }));
+    expect(parseCompatibleVoiceList({ data: many })).toHaveLength(500);
+    const [voice] = parseCompatibleVoiceList([{ id: "long", name: `a\nb${"c".repeat(300)}` }]);
+    expect(voice?.label).toHaveLength(120);
+    expect(voice?.label.startsWith("a b")).toBe(true);
+  });
+
   it("puts af_heart first so it becomes the default voice, and drops junk", () => {
     const voices = parseCompatibleVoiceList({
       data: [{ id: "af_alloy" }, { id: 7 }, { id: "" }, { id: "af_heart" }, { id: "af_alloy" }],

@@ -41,6 +41,9 @@ const MODEL_ID_PATTERN = /^[\w.:/@+-]+$/;
 /** Visible ASCII only, so a key can never break the Authorization header. */
 const API_KEY_PATTERN = /^[\x21-\x7e]+$/;
 const MAX_SERVER_DETAIL_LENGTH = 160;
+/** A voice list is shown to the user, so it stays small: ids, short names, a few hundred. */
+const MAX_LISTED_VOICES = 500;
+const MAX_VOICE_LABEL_LENGTH = 120;
 
 /** What the encrypted voice secret holds for a self-hosted speech server. */
 export interface OpenAiCompatibleVoiceSecret {
@@ -193,7 +196,13 @@ export function kokoroLangCode(voiceId: string): string | undefined {
 
 function voiceInfo(id: string, name?: string): VoiceInfo {
   const kokoro = KOKORO_ID.exec(id);
-  if (!kokoro) return { id, label: name?.trim() || id };
+  if (!kokoro) {
+    const label = name
+      ?.replace(/\p{Cc}+/gu, " ")
+      .trim()
+      .slice(0, MAX_VOICE_LABEL_LENGTH);
+    return { id, label: label || id };
+  }
   const [, lang, gender, base] = kokoro as unknown as [string, string, string, string];
   return {
     id,
@@ -237,6 +246,7 @@ export function parseCompatibleVoiceList(body: unknown): VoiceInfo[] {
         : entry && typeof entry === "object"
           ? (entry as { id?: unknown }).id
           : undefined;
+    if (voices.length >= MAX_LISTED_VOICES) break;
     if (typeof id !== "string" || !id.trim() || id.length > 120 || seen.has(id)) continue;
     seen.add(id);
     const name =
